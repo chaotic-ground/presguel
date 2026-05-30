@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""presguel 설정창 (GTK).
+"""presguel 설정창 (GTK4 + libadwaita).
 
-간단한 설정만 다룬다:
+GNOME 최신(49) 정석 스타일: AdwApplicationWindow + AdwHeaderBar +
+AdwPreferencesGroup + AdwSwitchRow + AdwComboRow.
+
+다루는 설정:
   - 간단 모드 on/off (기본 off = 모든 InputEntry 를 읽어 날개셋과 동일 동작)
   - 간단 모드 on 일 때: 한글 InputEntry / 영문 배치 InputEntry 를 드롭다운으로 지정
 
@@ -13,8 +16,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 import gi
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Adw, Gio
 
 
 def config_dir():
@@ -72,7 +76,6 @@ def load_entries():
     if layer is None:
         return out
     for i, entry in enumerate(layer.findall("InputEntry")):
-        # KeyTable name 이 있으면 그걸, 없으면 scheme/generator object 로 이름을 짓는다.
         name = None
         kt = entry.find(".//KeyTable")
         if kt is not None:
@@ -88,107 +91,124 @@ def load_entries():
     return out
 
 
-class SetupWindow(Gtk.Window):
-    def __init__(self):
-        super().__init__(title="Presguel 설정")
-        self.set_border_width(16)
-        self.set_default_size(420, -1)
+def _to_bool(s):
+    return str(s).lower() in ("true", "1", "yes", "on")
+
+
+def _to_int(s, default=0):
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return default
+
+
+class SetupWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Presguel 설정")
+        self.set_default_size(460, -1)
 
         cfg = load_ini()
         self.entries = load_entries()
+        labels = [lbl for _, lbl in self.entries] or ["(nalgaeset.xml 을 찾을 수 없음)"]
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.add(box)
+        # 헤더바 + 본문을 담는 ToolbarView (Adw 표준 레이아웃).
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        toolbar.add_top_bar(header)
 
-        # 간단 모드 토글
-        self.simple_check = Gtk.CheckButton(label="간단 모드 (한글/영문 항목 직접 지정)")
-        self.simple_check.set_active(cfg.get("simple_mode", "false").lower() in ("true", "1", "yes", "on"))
-        self.simple_check.connect("toggled", self.on_toggle)
-        box.pack_start(self.simple_check, False, False, 0)
+        # 저장 버튼(헤더 우측, suggested-action).
+        save_btn = Gtk.Button(label="저장")
+        save_btn.add_css_class("suggested-action")
+        save_btn.connect("clicked", self.on_save)
+        header.pack_end(save_btn)
 
-        desc = Gtk.Label(xalign=0)
-        desc.set_line_wrap(True)
-        desc.set_markup(
-            "<small>끄면 설정의 모든 입력 항목을 읽어 <b>날개셋과 똑같이</b> 동작합니다.\n"
-            "켜면 아래에서 고른 <b>한글 항목</b>과, 단축키(Alt+P 등)를 맞출 "
-            "<b>영문 배치 항목</b>만 사용합니다.</small>"
+        page = Adw.PreferencesPage()
+        toolbar.set_content(page)
+        self.set_content(toolbar)
+
+        group = Adw.PreferencesGroup(
+            title="입력 동작",
+            description="끄면 모든 입력 항목을 읽어 날개셋과 똑같이 동작합니다. "
+            "켜면 아래에서 고른 한글 항목과, 단축키(Alt+P 등)를 맞출 영문 배치 항목만 사용합니다.",
         )
-        box.pack_start(desc, False, False, 0)
+        page.add(group)
 
-        # 드롭다운 그리드
-        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
-        box.pack_start(grid, False, False, 0)
+        # 간단 모드 스위치 행.
+        self.simple_row = Adw.SwitchRow(
+            title="간단 모드",
+            subtitle="한글 / 영문 배치 항목을 직접 지정",
+        )
+        self.simple_row.set_active(_to_bool(cfg.get("simple_mode", "false")))
+        self.simple_row.connect("notify::active", self.on_toggle)
+        group.add(self.simple_row)
 
-        grid.attach(Gtk.Label(label="한글 입력 항목", xalign=0), 0, 0, 1, 1)
-        self.hangul_combo = self._make_combo(self._idx(cfg, "hangul_entry"))
-        grid.attach(self.hangul_combo, 1, 0, 1, 1)
+        # 한글 항목 콤보.
+        self.hangul_row = Adw.ComboRow(
+            title="한글 입력 항목",
+            subtitle="실제로 쓸 한글 자판",
+            model=Gtk.StringList.new(labels),
+        )
+        self._set_combo(self.hangul_row, _to_int(cfg.get("hangul_entry", "0")))
+        group.add(self.hangul_row)
 
-        grid.attach(Gtk.Label(label="영문 배치 항목", xalign=0), 0, 1, 1, 1)
-        self.latin_combo = self._make_combo(self._idx(cfg, "latin_entry"))
-        grid.attach(self.latin_combo, 1, 1, 1, 1)
+        # 영문 배치 콤보.
+        self.latin_row = Adw.ComboRow(
+            title="영문 배치 항목",
+            subtitle="단축키를 맞출 영문 배열 (예: 드보락)",
+            model=Gtk.StringList.new(labels),
+        )
+        self._set_combo(self.latin_row, _to_int(cfg.get("latin_entry", "1")))
+        group.add(self.latin_row)
 
-        # 버튼
-        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btns.set_halign(Gtk.Align.END)
-        cancel = Gtk.Button(label="취소")
-        cancel.connect("clicked", lambda *_: self.close())
-        save = Gtk.Button(label="저장")
-        save.get_style_context().add_class("suggested-action")
-        save.connect("clicked", self.on_save)
-        btns.pack_start(cancel, False, False, 0)
-        btns.pack_start(save, False, False, 0)
-        box.pack_start(btns, False, False, 0)
+        # 안내 행.
+        note = Adw.PreferencesGroup()
+        lbl = Gtk.Label(
+            label="저장 후 입력 소스를 한 번 전환하거나 ibus restart 하면 반영됩니다.",
+            xalign=0,
+            wrap=True,
+        )
+        lbl.add_css_class("dim-label")
+        note.add(lbl)
+        page.add(note)
 
-        note = Gtk.Label(xalign=0)
-        note.set_markup("<small>저장 후 입력 소스를 한 번 전환하거나 <tt>ibus restart</tt> 하면 반영됩니다.</small>")
-        box.pack_start(note, False, False, 0)
+        self._sync_sensitivity()
 
-        self.on_toggle(self.simple_check)
+    def _set_combo(self, row, idx):
+        n = max(1, len(self.entries))
+        row.set_selected(idx if 0 <= idx < n else 0)
+        if not self.entries:
+            row.set_sensitive(False)
 
-    def _make_combo(self, active_idx):
-        combo = Gtk.ComboBoxText()
-        if self.entries:
-            for _, label in self.entries:
-                combo.append_text(label)
-            # active_idx 는 InputEntry 인덱스 → 콤보 위치(동일)
-            pos = active_idx if 0 <= active_idx < len(self.entries) else 0
-            combo.set_active(pos)
-        else:
-            combo.append_text("(nalgaeset.xml 을 찾을 수 없음)")
-            combo.set_active(0)
-            combo.set_sensitive(False)
-        return combo
+    def _sync_sensitivity(self):
+        on = self.simple_row.get_active() and bool(self.entries)
+        self.hangul_row.set_sensitive(on)
+        self.latin_row.set_sensitive(on)
 
-    @staticmethod
-    def _idx(cfg, key):
-        try:
-            return int(cfg.get(key, "0"))
-        except ValueError:
-            return 0
-
-    def on_toggle(self, check):
-        on = check.get_active()
-        self.hangul_combo.set_sensitive(on and bool(self.entries))
-        self.latin_combo.set_sensitive(on and bool(self.entries))
+    def on_toggle(self, *_):
+        self._sync_sensitivity()
 
     def on_save(self, *_):
-        simple = self.simple_check.get_active()
-        h = self.hangul_combo.get_active()
-        l = self.latin_combo.get_active()
-        if h < 0:
-            h = 0
-        if l < 0:
-            l = 1
+        simple = self.simple_row.get_active()
+        h = self.hangul_row.get_selected() if self.entries else 0
+        l = self.latin_row.get_selected() if self.entries else 1
         save_ini(simple, h, l)
         self.close()
 
 
+class SetupApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="org.freedesktop.IBus.Presguel.Setup",
+                         flags=Gio.ApplicationFlags.FLAGS_NONE)
+
+    def do_activate(self):
+        win = self.props.active_window
+        if not win:
+            win = SetupWindow(self)
+        win.present()
+
+
 def main():
-    win = SetupWindow()
-    win.connect("destroy", Gtk.main_quit)
-    win.show_all()
-    Gtk.main()
-    return 0
+    return SetupApp().run(sys.argv)
 
 
 if __name__ == "__main__":

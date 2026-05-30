@@ -28,8 +28,14 @@ Order:
    The address string `unix:path=...,guid=...` is a standard D-Bus address zbus understands.
 
 ## Component install location
-- System: `/usr/share/ibus/component/` (writable here; contains anthy/chewing/dconf/gtk*/hangul/libpinyin/m17n/simple/typing-booster .xml)
-- Per-user alt: `~/.config/ibus/component/` (preferred for dev installs)
+- System: `/usr/share/ibus/component/` (needs sudo; contains anthy/chewing/dconf/gtk*/hangul/libpinyin/m17n/simple/typing-booster .xml)
+- **CORRECTION (verified on this machine):** this ibus does NOT scan the per-user dir.
+  `ibus write-cache` only scans `/usr/share/ibus/component`. A known-good component placed in
+  `~/.local/share/ibus/component/` (XDG_DATA_HOME) or `~/.config/ibus/component/` was NOT picked
+  up. So installation here REQUIRES the system dir + `sudo ibus write-cache --system`.
+  (`scripts/install.sh` does this.) Activation confirmed: `ibus list-engine` shows
+  `presguel - Presguel (날개셋 세벌식)`, and `ibus engine presguel` makes the daemon exec
+  `/usr/local/bin/presguel-ibus --ibus`.
 
 ## Reference component template (ibus-hangul)
 `/usr/share/ibus/component/hangul.xml`:

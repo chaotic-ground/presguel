@@ -13,4 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 presguel-core.workspace = true
-# zbus/tokio/xkeysym 등 ibus 프런트엔드 의존성은 frontend 구현 단계에서 추가한다.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "time"] }

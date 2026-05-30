@@ -74,7 +74,9 @@ sudo tee "$component_dst" > /dev/null <<XML
 XML
 
 echo "[5/5] 레지스트리 캐시 갱신 + ibus 재시작"
-sudo ibus write-cache --system || true
+# 시스템 캐시(엔진 탐색)와 사용자 캐시(GNOME 패널이 읽음, <setup> 경로 포함) 둘 다 갱신.
+sudo ibus write-cache --system 2>/dev/null || true
+ibus write-cache 2>/dev/null || true
 ibus restart 2>/dev/null || true
 sleep 2
 if ibus list-engine 2>/dev/null | grep -qi presguel; then

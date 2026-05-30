@@ -133,6 +133,8 @@ pub struct Layout {
     pub virtual_units: HashMap<u32, Jamo>,
     /// 조합용/옛 자모 → 호환 자모.
     pub final_conv: HashMap<u32, u32>,
+    /// 에디터 레이어의 단축글쇠(한/영 전환·한자 등). 프런트엔드가 해석한다.
+    pub shortcuts: Vec<Shortcut>,
 }
 
 impl Layout {
@@ -188,6 +190,7 @@ impl Config {
             combine,
             virtual_units,
             final_conv: self.editor.final_conv.clone(),
+            shortcuts: self.editor.shortcuts.clone(),
         })
     }
 

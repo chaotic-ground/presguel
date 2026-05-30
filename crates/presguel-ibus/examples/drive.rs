@@ -58,9 +58,30 @@ fn ibus_text_string(v: &Value<'_>) -> String {
     String::new()
 }
 
+/// 입력 인자를 (라벨, keyval) 목록으로 만든다.
+/// 기본: 각 문자를 그 코드포인트 keyval 로. `--raw a b c`: 토큰을 16/10진 keyval 로.
+fn parse_keys(args: &[String]) -> Vec<(String, u32)> {
+    if args.first().map(String::as_str) == Some("--raw") {
+        args[1..]
+            .iter()
+            .filter_map(|t| {
+                let kv = t
+                    .strip_prefix("0x")
+                    .and_then(|h| u32::from_str_radix(h, 16).ok())
+                    .or_else(|| t.parse::<u32>().ok())?;
+                Some((format!("0x{kv:04x}"), kv))
+            })
+            .collect()
+    } else {
+        let s = args.first().cloned().unwrap_or_else(|| "kf kfhf".to_string());
+        s.chars().map(|c| (format!("{c:?}"), c as u32)).collect()
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let input = std::env::args().nth(1).unwrap_or_else(|| "kf kfhf".to_string());
+    let cli: Vec<String> = std::env::args().skip(1).collect();
+    let keys = parse_keys(&cli);
 
     let addr = ibus_address()?;
     let conn = Builder::address(addr.as_str())?.build().await?;
@@ -114,10 +135,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _: () = engine.call("FocusIn", &()).await.unwrap_or(());
 
-    for ch in input.chars() {
-        let keyval = ch as u32;
-        println!("→ key {ch:?} (0x{keyval:02x})");
-        let handled: bool = engine.call("ProcessKeyEvent", &(keyval, 0u32, 0u32)).await?;
+    for (label, keyval) in &keys {
+        println!("→ key {label} (0x{keyval:02x})");
+        let handled: bool = engine.call("ProcessKeyEvent", &(*keyval, 0u32, 0u32)).await?;
         println!("  handled={handled}");
         tokio::time::sleep(Duration::from_millis(60)).await;
     }

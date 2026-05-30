@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Presguel Preferences
+Name[ko]=Presguel 설정
+Comment=Set Presguel (날개셋 호환) input method preferences
+Comment[ko]=Presguel(날개셋 호환) 입력기를 설정합니다
+Exec=/usr/local/bin/presguel-setup
+Icon=ibus-hangul
+NoDisplay=true
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=Settings;

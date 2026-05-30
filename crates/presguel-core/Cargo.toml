@@ -1,0 +1,12 @@
+[package]
+name = "presguel-core"
+description = "날개셋(nalgaeset) 입력 설정을 해석하는 한글 조합 엔진 (ibus 비의존 순수 라이브러리)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+quick-xml.workspace = true
+thiserror.workspace = true

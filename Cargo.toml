@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/presguel-core",
+    "crates/presguel-ibus",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-AllRightsReserved"
+repository = "https://github.com/lens0021/presguel"
+authors = ["lens0021 <lorentz0021@gmail.com>"]
+
+[workspace.dependencies]
+presguel-core = { path = "crates/presguel-core" }
+quick-xml = "0.37"
+thiserror = "2"

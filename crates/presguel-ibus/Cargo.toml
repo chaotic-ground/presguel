@@ -1,0 +1,16 @@
+[package]
+name = "presguel-ibus"
+description = "presguel: 날개셋 호환 ibus 한글 입력기 엔진 (zbus 기반)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "presguel-ibus"
+path = "src/main.rs"
+
+[dependencies]
+presguel-core.workspace = true
+# zbus/tokio/xkeysym 등 ibus 프런트엔드 의존성은 frontend 구현 단계에서 추가한다.

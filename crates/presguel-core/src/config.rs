@@ -30,6 +30,8 @@ pub enum ConfigError {
     BadUnit(String),
     #[error("InputEntry 인덱스 {0} 없음")]
     NoEntry(usize),
+    #[error("오토마타 상태 {state} 의 식 파싱 실패: {source}")]
+    AutomataExpr { state: i64, source: ExprError },
 }
 
 // ── 파싱된(raw) 모델 ─────────────────────────────────────────────────────────
@@ -121,6 +123,15 @@ pub struct Bksp {
 
 // ── 컴파일된(engine-ready) 모델 ──────────────────────────────────────────────
 
+/// 컴파일된 오토마타 상태 한 칸. H3| 낱자 입력 시 현재 상태의 `value` 식을 평가해
+/// 다음 상태/동작 코드를 얻는다. 식이 적용되지 않는 상황이면 `default` 를 쓴다.
+/// (변수·결과값 의미는 `research/ngs-automata-help.txt` 참고.)
+#[derive(Debug, Clone)]
+pub struct AutomataState {
+    pub value: Expr,
+    pub default: Expr,
+}
+
 /// 한 입력 항목을 엔진이 바로 쓰도록 컴파일한 배열.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -135,6 +146,10 @@ pub struct Layout {
     pub final_conv: HashMap<u32, u32>,
     /// 에디터 레이어의 단축글쇠(한/영 전환·한자 등). 프런트엔드가 해석한다.
     pub shortcuts: Vec<Shortcut>,
+    /// 오토마타: 상태 id → 컴파일된 전이 규칙. 비어 있으면 엔진이 기본 휴리스틱을 쓴다.
+    pub automata: HashMap<i64, AutomataState>,
+    /// 오토마타 시작 상태(AutomataTable 의 default 속성). 보통 0.
+    pub automata_start: i64,
 }
 
 impl Layout {
@@ -198,6 +213,22 @@ impl Config {
             virtual_units.insert(v.from, j);
         }
 
+        // 오토마타 상태 식들을 컴파일한다(value=전이식, default=폴백식).
+        let mut automata = HashMap::new();
+        for row in &entry.automata {
+            let value = Expr::parse(&row.value).map_err(|source| ConfigError::AutomataExpr {
+                state: row.state,
+                source,
+            })?;
+            let default =
+                Expr::parse(&row.default).map_err(|source| ConfigError::AutomataExpr {
+                    state: row.state,
+                    source,
+                })?;
+            automata.insert(row.state, AutomataState { value, default });
+        }
+        let automata_start = entry.automata_default.trim().parse().unwrap_or(0);
+
         Ok(Layout {
             name: entry
                 .key_table
@@ -209,6 +240,8 @@ impl Config {
             virtual_units,
             final_conv: self.editor.final_conv.clone(),
             shortcuts: self.editor.shortcuts.clone(),
+            automata,
+            automata_start,
         })
     }
 
@@ -541,6 +574,20 @@ mod tests {
         assert_eq!(
             layout.standalone(Jamo::new(Category::Jong, 0x11A8)),
             Some('ㄱ')
+        );
+
+        // 오토마타: AutomataTable 의 두 상태(0,2)가 컴파일돼 들어왔는지.
+        assert_eq!(layout.automata.len(), 2);
+        assert_eq!(layout.automata_start, 0);
+        // 상태 2 식(A&&A!=500 ? 0 : ...): 입력이 초성 ㄱ(A=서열, !=500)이면 0(새 글자).
+        use crate::expr::{Ctx, Value};
+        let st2 = layout.automata.get(&2).expect("state 2");
+        assert_eq!(
+            st2.value.eval(&Ctx {
+                a: 1,
+                ..Default::default()
+            }),
+            Ok(Value::Int(0))
         );
     }
 }

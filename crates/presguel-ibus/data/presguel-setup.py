@@ -159,19 +159,16 @@ class SetupWindow(Adw.ApplicationWindow):
         self.entry_row.connect("notify::selected", self.on_change)
         group.add(self.entry_row)
 
-        # 단축글쇠 사용 토글. 기본 켜짐. 끄면 한/영 키 등을 통과시켜 직접 바인딩 가능.
+        # 한/영 키로 입력 항목을 전환할지. 기본 켜짐.
         sc_group = Adw.PreferencesGroup(
             title="단축글쇠",
-            description="한/영 키 등으로 입력 항목을 전환합니다. 끄면 그 키들이 엔진을 거치지 않고 "
-            "통과되어, 원하는 키를 직접 바인딩할 수 있습니다. (참고: Wayland 에서 CapsLock 은 "
-            "컴포지터가 직접 처리해 입력기까지 오지 않으므로, 단축글쇠로 쓸 수 없고 GNOME 설정 "
-            "등에서 직접 지정해야 합니다.)",
+            description="한/영 키로 입력 항목을 전환합니다. 끄면 한/영 키를 직접 다른 용도로 "
+            "쓸 수 있습니다.",
         )
         page.add(sc_group)
 
         self.shortcuts_row = Adw.SwitchRow(
-            title="단축글쇠 사용",
-            subtitle="끄면 한/영 키 등을 통과시켜 직접 바인딩",
+            title="한/영 키로 전환",
         )
         self.shortcuts_row.set_active(_to_bool(cfg.get("shortcuts_enabled", "true")))
         self.shortcuts_row.connect("notify::active", self.on_change)
@@ -180,22 +177,11 @@ class SetupWindow(Adw.ApplicationWindow):
         # 키보드 배열 안내(단축키·영문은 GNOME 입력 소스에서 배열별 엔진을 골라 정한다).
         kbd_group = Adw.PreferencesGroup(
             title="키보드 배열",
-            description="한글 자판은 물리 위치로 고정됩니다. 단축키(Ctrl/Alt+키)와 영문 배열은 "
-            "GNOME 설정 → 키보드 → 입력 소스에서 'Presguel (Dvorak)' 처럼 원하는 배열의 항목을 "
-            "골라 정하세요.",
+            description="단축키(Ctrl/Alt+키)와 영문은 GNOME 설정 → 키보드 → 입력 소스에서 "
+            "'Presguel (Dvorak)' 처럼 원하는 배열을 고르면 됩니다. 한글 자판은 어느 배열에서도 "
+            "같은 자리입니다.",
         )
         page.add(kbd_group)
-
-        # 안내 행.
-        note = Adw.PreferencesGroup()
-        lbl = Gtk.Label(
-            label="입력 동작 설정은 즉시 적용됩니다(입력 중이었다면 입력창을 다시 누르면 반영).",
-            xalign=0,
-            wrap=True,
-        )
-        lbl.add_css_class("dim-label")
-        note.add(lbl)
-        page.add(note)
 
         self._sync_sensitivity()
         self._loading = False

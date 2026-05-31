@@ -25,7 +25,10 @@ setup_dst="/usr/local/bin/presguel-setup"
 setup_src="$repo_root/crates/presguel-ibus/data/presguel-setup.py"
 desktop_dst="/usr/share/applications/ibus-setup-presguel.desktop"
 desktop_src="$repo_root/crates/presguel-ibus/data/ibus-setup-presguel.desktop"
+apply_dst="/usr/local/bin/presguel-apply-layout"
+apply_src="$repo_root/scripts/presguel-apply-layout"
 component_dst="/usr/share/ibus/component/presguel.xml"
+ini_path="$presguel_cfg_dir/config.ini"
 
 echo "[1/5] 릴리스 빌드"
 cargo build --release -p presguel-ibus
@@ -37,6 +40,7 @@ echo "[2/5] 바이너리·설정창·데스크톱 설치 (sudo)"
 # (케밥 메뉴 ⋮ → Preferences). 그래서 desktop 파일이 반드시 필요하다.
 sudo install -Dm755 "$bin_src" "$bin_dst"
 sudo install -Dm755 "$setup_src" "$setup_dst"
+sudo install -Dm755 "$apply_src" "$apply_dst"
 sudo install -Dm644 "$desktop_src" "$desktop_dst"
 sudo update-desktop-database /usr/share/applications 2>/dev/null || true
 

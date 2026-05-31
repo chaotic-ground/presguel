@@ -1,0 +1,23 @@
+# lefthook 설정. clone 후 한 번 `lefthook install` 로 git 훅을 건다.
+#
+# pre-commit: 포맷 자동 수정(Rust=cargo fmt, Python=ruff format) 후 변경분을 다시 스테이지.
+# pre-push:   전체 테스트 실행(실패 시 push 중단).
+
+pre-commit:
+  parallel: true
+  commands:
+    rustfmt:
+      # 스테이지된 .rs 가 있을 때만 실행. 포맷 후 변경분을 자동 재스테이지.
+      glob: "*.rs"
+      run: cargo fmt --all
+      stage_fixed: true
+    ruff-format:
+      glob: "*.py"
+      # ruff 가 설치돼 있으면 포맷, 없으면 건너뜀(선택적 도구).
+      run: ruff format {staged_files}
+      stage_fixed: true
+
+pre-push:
+  commands:
+    cargo-test:
+      run: cargo test --workspace

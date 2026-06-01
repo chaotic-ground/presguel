@@ -60,6 +60,13 @@ pub struct Engine {
     /// "달라붙기"). 가나가… 처럼 연속 확정한 글자들을 차례로 되살릴 수 있도록 누적하되,
     /// `MAX_PREV_SYLLABLES` 상한을 둬 무한 증가를 막는다.
     prev_syllables: Vec<Vec<Unit>>,
+    /// 무한 낱자 수정으로 *직전에* 덮어쓴 낱자: (갈래, 옛 코드포인트, 새 코드포인트).
+    /// 엔진은 덮어쓴 옛 낱자를 버리므로, 분리(0x13)·복원(0x14) 특수글쇠를 위해 마지막
+    /// 한 번의 겹쳐쓰기만 따로 기억한다(그 뒤 다른 입력·편집·확정이 오면 무효화).
+    last_overwrite: Option<(Category, u32, u32)>,
+    /// 이력 재생(replay) 중인가. 재생 중에는 put_modify 의 겹쳐쓰기 기록을 멈춘다(실제
+    /// 입력이 아니라 재구성이므로). C0 편집 명령들이 cur 을 안전하게 다시 만들 때 쓴다.
+    replaying: bool,
 }
 
 impl Engine {
@@ -72,6 +79,8 @@ impl Engine {
             auto_state,
             bksp_streak: None,
             prev_syllables: Vec::new(),
+            last_overwrite: None,
+            replaying: false,
         }
     }
 
@@ -153,6 +162,7 @@ impl Engine {
             }
         }
         self.cur = Syllable::default();
+        self.last_overwrite = None; // 음절이 확정되면 겹쳐쓰기 기록도 무효.
         s
     }
 
@@ -184,6 +194,7 @@ impl Engine {
         self.prev_syllables.clear();
         self.auto_state = self.layout.automata_start;
         self.bksp_streak = None;
+        self.last_overwrite = None;
     }
 
     // ── 낱자 투입 ────────────────────────────────────────────────────────────
@@ -346,6 +357,14 @@ impl Engine {
             Category::Cho => self.cur.cho = Some(newcp),
             Category::Jung => self.cur.jung = Some(newcp),
             Category::Jong => self.cur.jong = Some(newcp),
+        }
+        // 무한 낱자 수정 분리/복원(0x13/0x14)용: 직전 겹쳐쓰기만 기억(재생 중엔 제외).
+        // 일반 배치(겹쳐쓰기 아님)는 직전 기록을 무효화한다("직전" 의미 유지).
+        if !self.replaying {
+            self.last_overwrite = match existing {
+                Some(e) if replaced => Some((j.category, e, j.cp)),
+                _ => None,
+            };
         }
         replaced
     }
@@ -678,14 +697,17 @@ impl Engine {
     // 확정)으로 떨어진다.
 
     /// 남은 이력을 처음부터 재생해 현재 음절(cur)과 오토마타 상태를 재구성한다.
-    /// (한 음절 안의 단위들이므로 재생 중 확정은 발생하지 않는다.)
+    /// (한 음절 안의 단위들이므로 재생 중 확정은 발생하지 않는다.) 재생은 실제 입력이
+    /// 아니므로 겹쳐쓰기 기록을 남기지 않는다(replaying 가드).
     fn replay_history(&mut self) {
         let hist = std::mem::take(&mut self.history);
         self.cur = Syllable::default();
         self.auto_state = self.layout.automata_start;
+        self.replaying = true;
         for u in hist {
             let _ = self.feed_unit(u);
         }
+        self.replaying = false;
     }
 
     /// 조합 중 편집 명령의 공통 결과(확정 없음, 현재 preedit, 소비).
@@ -747,6 +769,12 @@ impl Engine {
         let commit = self.commit_current();
         // 빼낸 성분은 새 음절의 시작이므로 오토마타 상태를 초기화한다(commit_current 는
         // 상태를 보존하므로, 안 하면 '완성' 상태가 남아 다음 글쇠가 곧바로 확정돼 버린다).
+        self.commit_then_start_with(commit, moved)
+    }
+
+    /// 떼어낸 단위(들)로 새 음절을 시작한다(공통). 남은 현재 음절을 확정한 commit 을
+    /// 받고, 오토마타를 초기화한 뒤 moved 를 재투입해 결과를 만든다.
+    fn commit_then_start_with(&mut self, commit: String, moved: Vec<Unit>) -> KeyOutcome {
         self.history.clear();
         self.auto_state = self.layout.automata_start;
         for u in moved {
@@ -758,6 +786,121 @@ impl Engine {
             consumed: true,
             delete_before: 0,
         }
+    }
+
+    /// 0x18 초·종성 맞바꾸기: 초성↔종성을 서로 옮긴다(대응 낱자가 없으면 무동작).
+    /// 두벌식 자판에서 종성 자음을 넣는 용도지만 오토마타와 무관하게 동작한다.
+    fn cmd_swap_cho_jong(&mut self) -> KeyOutcome {
+        let cho = self.cur.cho;
+        let jong = self.cur.jong;
+        let jung = self.cur.jung;
+        if cho.is_none() && jong.is_none() {
+            return self.composing_outcome();
+        }
+        let new_cho = jong.and_then(unit::jong_to_cho);
+        let new_jong = cho.and_then(unit::cho_to_jong);
+        // 변환 불가(대응 낱자 없음: ㄸㅃㅉ 초성, 겹받침 등)면 안전하게 무동작.
+        if (jong.is_some() && new_cho.is_none()) || (cho.is_some() && new_jong.is_none()) {
+            return self.composing_outcome();
+        }
+        self.history.clear();
+        self.cur = Syllable::default();
+        self.auto_state = self.layout.automata_start;
+        if let Some(c) = new_cho {
+            let _ = self.feed_unit(Unit::Jamo(Jamo::new(Category::Cho, c)));
+        }
+        if let Some(v) = jung {
+            let _ = self.feed_unit(Unit::Jamo(Jamo::new(Category::Jung, v)));
+        }
+        if let Some(j) = new_jong {
+            let _ = self.feed_unit(Unit::Jamo(Jamo::new(Category::Jong, j)));
+        }
+        self.composing_outcome()
+    }
+
+    /// 0x12 도깨비불: 종성의 마지막 자음만 떼어 다음 글자의 초성으로 넘긴다.
+    /// '강'→'가'+조합 'ㅇ', 'ㄴㅎ'으로 친 '않'→'안'+'ㅎ'.
+    fn cmd_dokkaebi(&mut self) -> KeyOutcome {
+        if self.cur.jong.is_none() {
+            return self.composing_outcome();
+        }
+        let pos = {
+            let layout = &self.layout;
+            self.history
+                .iter()
+                .rposition(|u| Self::unit_cat(layout, u) == Some(Category::Jong))
+        };
+        let Some(pos) = pos else {
+            return self.composing_outcome();
+        };
+        let moved = self.history.remove(pos);
+        self.replay_history();
+        let commit = self.commit_current();
+        // 떼어낸 종성 자음을 초성으로 바꿔 새 음절 시작.
+        let moved = match moved {
+            Unit::Jamo(j) => unit::jong_to_cho(j.cp)
+                .map(|c| Unit::Jamo(Jamo::new(Category::Cho, c)))
+                .unwrap_or(Unit::Jamo(j)),
+            other => other,
+        };
+        self.commit_then_start_with(commit, vec![moved])
+    }
+
+    /// 0x21 마지막 한 타를 분리: 마지막으로 입력된 단위를 떼어 다음 글자로 옮긴다.
+    /// '한'→'하'+조합 'ㄴ'. (무한 낱자 수정 복원 연동은 단순화: 분리만 수행.)
+    fn cmd_split_last_key(&mut self) -> KeyOutcome {
+        let Some(moved) = self.history.pop() else {
+            return self.composing_outcome();
+        };
+        self.replay_history();
+        let commit = self.commit_current();
+        self.commit_then_start_with(commit, vec![moved])
+    }
+
+    /// 0x23 직전의 두 글쇠 교환: 이력의 마지막 두 단위 순서를 바꿔 재생한다.
+    /// (조합 중 두 낱자에 대해서만 동작. cursor 앞 확정 문자까지의 교환은 미지원.)
+    fn cmd_swap_last_two_keys(&mut self) -> KeyOutcome {
+        let n = self.history.len();
+        if n < 2 {
+            return self.composing_outcome();
+        }
+        self.history.swap(n - 1, n - 2);
+        self.replay_history();
+        self.composing_outcome()
+    }
+
+    /// last_overwrite 의 new 낱자를 현재 이력에서 old 로 되돌린다(있으면). 되돌린 뒤
+    /// 재생은 호출부가 한다. 되돌린 (갈래, new) 를 반환(0x13 이 다음 글자로 옮길 때 사용).
+    fn restore_overwrite_in_history(&mut self) -> Option<(Category, u32)> {
+        let (cat, old, new) = self.last_overwrite.take()?;
+        let pos = self
+            .history
+            .iter()
+            .rposition(|u| matches!(u, Unit::Jamo(j) if j.category == cat && j.cp == new));
+        if let Some(p) = pos {
+            self.history[p] = Unit::Jamo(Jamo::new(cat, old));
+        }
+        Some((cat, new))
+    }
+
+    /// 0x14 무한 낱자 수정 복원: 직전 겹쳐쓰기를 취소해 옛 낱자로 되돌린다.
+    /// '가'→'개'(ㅏ→ㅐ) 뒤 누르면 '가'. (직전 한 번의 겹쳐쓰기만 지원.)
+    fn cmd_infinite_restore(&mut self) -> KeyOutcome {
+        if self.restore_overwrite_in_history().is_some() {
+            self.replay_history();
+        }
+        self.composing_outcome()
+    }
+
+    /// 0x13 무한 낱자 수정 분리: 직전 겹쳐쓰기를 취소(옛 낱자 복원)하고, 새로 들어왔던
+    /// 낱자를 다음 글자로 옮겨 그 글자를 조합한다. '개'→ '가' 확정 + 조합 'ㅐ'.
+    fn cmd_infinite_split(&mut self) -> KeyOutcome {
+        let Some((cat, new)) = self.restore_overwrite_in_history() else {
+            return self.composing_outcome();
+        };
+        self.replay_history();
+        let commit = self.commit_current();
+        self.commit_then_start_with(commit, vec![Unit::Jamo(Jamo::new(cat, new))])
     }
 
     /// C0 특수글쇠 코드 분배.
@@ -799,6 +942,14 @@ impl Engine {
             0x1A => self.bksp_cmd(BkspUnit::LowestLastKey),
             0x1B => self.bksp_cmd(BkspUnit::LowestWhole),
             0x1C => self.bksp_cmd(BkspUnit::Syllable),
+            // 0x12 도깨비불, 0x18 초·종성 맞바꾸기, 0x21 마지막 한 타 분리,
+            // 0x23 직전 두 글쇠 교환, 0x13/0x14 무한 낱자 수정 분리/복원.
+            0x12 => self.cmd_dokkaebi(),
+            0x13 => self.cmd_infinite_split(),
+            0x14 => self.cmd_infinite_restore(),
+            0x18 => self.cmd_swap_cho_jong(),
+            0x21 => self.cmd_split_last_key(),
+            0x23 => self.cmd_swap_last_two_keys(),
             // 미구현/미지원(cursor 이동·Del·한자 후보 변환 등): 현재 음절만 확정.
             _ => {
                 let commit = self.commit_and_clear();
@@ -1044,6 +1195,12 @@ mod tests {
           <Key at="0x4B" value="C0|0x1A"/> <!-- K 최하위 직전 한 타 -->
           <Key at="0x4C" value="C0|0x1B"/> <!-- L 최하위 낱자 전체 -->
           <Key at="0x4D" value="C0|0x1C"/> <!-- M 글자 전체 -->
+          <Key at="0x4E" value="C0|0x18"/> <!-- N 초·종성 맞바꾸기 -->
+          <Key at="0x4F" value="C0|0x12"/> <!-- O 도깨비불 -->
+          <Key at="0x50" value="C0|0x13"/> <!-- P 무한낱자수정 분리 -->
+          <Key at="0x51" value="C0|0x14"/> <!-- Q 무한낱자수정 복원 -->
+          <Key at="0x52" value="C0|0x21"/> <!-- R 마지막 한 타 분리 -->
+          <Key at="0x53" value="C0|0x23"/> <!-- S 직전 두 글쇠 교환 -->
         </KeyTable>
       </InputSchemeSetting>
       <GeneratorSetting object="CNgsImeEx">
@@ -1529,5 +1686,80 @@ mod tests {
         assert_eq!(o.commit, "");
         assert_eq!(o.preedit, "");
         assert!(o.consumed);
+    }
+
+    #[test]
+    fn c0_swap_cho_jong() {
+        // 초·종성 맞바꾸기: 간(ㄱㅏㄴ) → 낙(ㄴㅏㄱ).
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'N', false); // C0|0x18
+        assert_eq!(o.preedit, "낙");
+    }
+
+    #[test]
+    fn c0_dokkaebi_moves_jong_as_cho() {
+        // 도깨비불: 간 → "가" 확정 + 종성 ㄴ이 다음 글자의 *초성*으로 → 이어 ㅏ면 "나".
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'O', false); // C0|0x12
+        assert_eq!(o.commit, "가");
+        assert_eq!(o.preedit, "ㄴ");
+        let o2 = e.press(b'a', false); // 초성 ㄴ + ㅏ → 나 (0xA 와 달리 초성으로 붙음)
+        assert_eq!(o2.preedit, "나");
+    }
+
+    #[test]
+    fn c0_split_last_key() {
+        // 마지막 한 타 분리: 간 → "가" 확정 + 마지막 타(종성 ㄴ)가 다음 글자로(종성 성격).
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'R', false); // C0|0x21
+        assert_eq!(o.commit, "가");
+        assert_eq!(o.preedit, "ㄴ");
+    }
+
+    #[test]
+    fn c0_infinite_restore() {
+        // 무한 낱자 수정 복원: 가→개(ㅏ→ㅐ 겹침) 뒤 복원 → 가.
+        let mut e = auto_engine();
+        typ(&mut e, "ga"); // 가
+        let o1 = e.press(b'i', false); // ㅐ → 개(겹쳐쓰기)
+        assert_eq!(o1.preedit, "개");
+        let o2 = e.press(b'Q', false); // C0|0x14 복원
+        assert_eq!(o2.commit, "");
+        assert_eq!(o2.preedit, "가");
+    }
+
+    #[test]
+    fn c0_infinite_split() {
+        // 무한 낱자 수정 분리: 개(ㅏ→ㅐ 겹침) → "가" 확정 + 겹쳐졌던 ㅐ가 다음 글자로.
+        let mut e = auto_engine();
+        typ(&mut e, "ga"); // 가
+        e.press(b'i', false); // 개
+        let o = e.press(b'P', false); // C0|0x13 분리
+        assert_eq!(o.commit, "가");
+        assert_eq!(o.preedit, "ㅐ");
+    }
+
+    #[test]
+    fn c0_infinite_restore_noop_without_overwrite() {
+        // 겹쳐쓰기가 없었으면 복원은 무동작(가 그대로).
+        let mut e = auto_engine();
+        typ(&mut e, "ga"); // 가 (겹쳐쓰기 없음)
+        let o = e.press(b'Q', false); // C0|0x14
+        assert_eq!(o.preedit, "가");
+    }
+
+    #[test]
+    fn c0_swap_last_two_keys_reorders_compound() {
+        // 직전 두 글쇠 교환: ㅗ·ㅏ로 만든 ㅘ(겹모음)에서 순서를 바꾸면 결합 규칙(O+A)이
+        // 깨져 ㅗ만 남는다(A+O 규칙은 없음). 입력 순서를 세밀히 반영함을 보인다.
+        let mut e = auto_engine();
+        typ(&mut e, "oa"); // ㅗ+ㅏ → ㅘ
+        assert_eq!(e.cur.jung, Some(0x116A)); // ㅘ
+        let o = e.press(b'S', false); // C0|0x23 직전 두 글쇠 교환
+        assert!(o.consumed);
+        assert_eq!(e.cur.jung, Some(0x1169)); // ㅗ (재결합 안 됨)
     }
 }

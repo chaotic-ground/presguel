@@ -102,6 +102,20 @@ fn is_vowel_compat(compat: u32) -> bool {
     (0x314F..=0x3163).contains(&compat)
 }
 
+/// 초성 코드포인트를 같은 자음의 종성 코드포인트로 바꾼다(대응 없으면 None).
+/// 예: ㄱ초성(U+1100) → ㄱ종성(U+11A8). C0 특수글쇠(초·종성 맞바꾸기 등)에서 쓴다.
+pub fn cho_to_jong(cho_cp: u32) -> Option<u32> {
+    let compat = jamo::cho_index(cho_cp).map(|i| CHO_COMPAT[i as usize])?;
+    jong_cp_for_compat(compat)
+}
+
+/// 종성 코드포인트를 같은 자음의 초성 코드포인트로 바꾼다(대응 없으면 None).
+/// 예: ㅇ종성(U+11BC) → ㅇ초성(U+110B). 도깨비불·초종성 맞바꾸기에서 쓴다.
+pub fn jong_to_cho(jong_cp: u32) -> Option<u32> {
+    let compat = jamo::jong_index(jong_cp).map(|i| JONG_COMPAT[i as usize])?;
+    cho_cp_for_compat(compat)
+}
+
 /// 니모닉의 "핵심 토큰"(밑줄 제거) → 호환 자모(글자 정체). 위치 무관.
 fn mnemonic_to_compat(core: &str) -> Option<u32> {
     Some(match core {

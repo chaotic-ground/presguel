@@ -1982,4 +1982,58 @@ mod tests {
         assert_eq!(o.preedit, "ㄴ"); // 그대로
         assert_eq!(o.delete_before, 0);
     }
+
+    // 모아치기 받침-우선 백스페이스: 사용자 설정처럼 Bksp condition1="ReverseJLTRN".
+    // ㅇ·ㅅ(종성)·ㅏ 순으로 쳐서 모아치기로 '앗'이 된 뒤 백스페이스 → 입력 순서와 무관히
+    // 받침 ㅅ부터 지워져 '아'.
+    fn reverse_bksp_engine() -> Engine {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<EditContextSetting version="0x500">
+  <EditorLayer flag="0"><FinalConvTable/></EditorLayer>
+  <InputLayer default="0" current="0">
+    <InputEntry>
+      <InputSchemeSetting object="CBasicInputScheme">
+        <KeyTable name="rev" flag="0" from="33" to="126">
+          <Key at="0x6F" value="H3|Q_"/>  <!-- o 초성 ㅇ -->
+          <Key at="0x73" value="H3|_S"/>  <!-- s 종성 ㅅ -->
+          <Key at="0x61" value="H3|A_"/>  <!-- a 중성 ㅏ -->
+        </KeyTable>
+      </InputSchemeSetting>
+      <GeneratorSetting object="CNgsImeEx">
+        <UnitMixTable/><VirtualUnitTable/>
+        <AutomataTable default="0">
+          <Automata state="0" value="1" default="0"/>
+          <Automata state="1" value="A||B||C ? (A||D)&amp;&amp;(B||E) ? 2 : 1 : -2" default="-1"/>
+          <Automata state="2" value="A&amp;&amp;A!=500 ? 0 : B||C||A==500 ? 2 : -2" default="0"/>
+        </AutomataTable>
+        <Extra><Bksp key="1" value1="BkspAttach" value2="ByUnitStep|BkspAttach" condition1="ReverseJLTRN" condition2="0"/></Extra>
+      </GeneratorSetting>
+    </InputEntry>
+  </InputLayer>
+</EditContextSetting>"#;
+        let cfg = Config::parse(xml).unwrap();
+        Engine::new(cfg.compile(0).unwrap())
+    }
+
+    #[test]
+    fn moachigi_backspace_deletes_jong_first() {
+        let mut e = reverse_bksp_engine();
+        typ(&mut e, "osa"); // ㅇ(초) ㅅ(종) ㅏ(중) → 모아치기 → 앗
+        assert_eq!(e.preedit(), "앗");
+        let o = e.backspace(); // 받침 ㅅ 먼저(입력 순서 무관) → 아
+        assert_eq!(o.preedit, "아");
+        let o2 = e.backspace(); // 중성 ㅏ → ㅇ
+        assert_eq!(o2.preedit, "ㅇ");
+    }
+
+    #[test]
+    fn reverse_jltrn_sets_lowest_lastkey() {
+        // condition1="ReverseJLTRN" 가 조합 중 삭제 단위를 최하위 낱자 우선으로 만든다.
+        let e = reverse_bksp_engine();
+        assert_eq!(
+            e.layout().bksp.composing,
+            crate::config::BkspUnit::LowestLastKey
+        );
+        assert!(e.layout().bksp.attach); // BkspAttach 도 켜짐
+    }
 }

@@ -172,6 +172,9 @@ fn parse_bksp_value(s: &str) -> (BkspUnit, bool) {
             "1" => unit = BkspUnit::LowestLastKey,
             "2" => unit = BkspUnit::LowestWhole,
             "BySyllable" | "3" => unit = BkspUnit::Syllable,
+            // 날개셋 "ReverseJLTRN" 판단 기준: 모아치기에서 입력 순서와 무관하게 종성→
+            // 중성→초성 역순으로(받침부터) 지운다 = 최하위 낱자의 직전 한 타.
+            "ReverseJLTRN" => unit = BkspUnit::LowestLastKey,
             _ => {}
         }
     }
@@ -284,8 +287,13 @@ impl Config {
             .iter()
             .find(|b| b.key == 1)
             .map(|b| {
-                let (composing, a1) = parse_bksp_value(&b.value1);
+                let (mut composing, a1) = parse_bksp_value(&b.value1);
                 let (idle, a2) = parse_bksp_value(&b.value2);
+                // 삭제 단위가 value 가 아니라 condition(판단 기준)에 들어가는 경우가 있다.
+                // 특히 "ReverseJLTRN"(받침부터 역순) 은 condition1 에 실리므로 함께 본다.
+                if b.condition1.contains("ReverseJLTRN") {
+                    composing = BkspUnit::LowestLastKey;
+                }
                 BkspBehavior {
                     composing,
                     idle,

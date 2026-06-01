@@ -116,8 +116,11 @@ pub struct IBusEngine {
     /// 항목 직접 지정 모드에서 쓸 항목 인덱스(settings 에서 파생, 항목 수로 클램프).
     pick_idx: usize,
     /// 클라이언트 capability 비트마스크(SetCapabilities). bit3(0x8)=surrounding-text 지원.
-    /// BkspAttach(앞 확정 글자 재조합)는 이게 켜진 앱에서만 가능하다.
     caps: u32,
+    /// 앱이 실제로 SetSurroundingText 를 보내준 적이 있는가. capability 비트만으로는
+    /// 신뢰할 수 없어(예: 터미널이 켰다고 하고 DeleteSurroundingText 를 무시), 실제
+    /// surrounding-text 가 도착한 앱에서만 BkspAttach(앞 글자 재조합)를 시도한다.
+    got_surrounding: bool,
 }
 
 /// IBus capability: surrounding-text 지원 비트(IBUS_CAP_SURROUNDING_TEXT = 1<<3).
@@ -181,6 +184,7 @@ impl IBusEngine {
             settings: Settings::default(), // apply_settings 가 곧 덮어쓴다
             pick_idx: 0,
             caps: 0,
+            got_surrounding: false,
         };
         engine.apply_settings(st);
         engine
@@ -386,8 +390,10 @@ impl IBusEngine {
                         KeyClass::Backspace => {
                             // 조합 중이 아니고 BkspAttach 도 불가능하면 응용에 넘긴다.
                             // (BkspAttach 는 core 가 delete_before>0 으로 신호하며, 그건
-                            //  surrounding-text 지원 앱에서만 의미 있다.)
-                            let supports_surround = self.caps & CAP_SURROUNDING_TEXT != 0;
+                            //  surrounding-text 가 실제로 동작하는 앱에서만 의미 있다.
+                            //  capability 비트만으론 부족해 SetSurroundingText 수신까지 확인.)
+                            let supports_surround =
+                                self.caps & CAP_SURROUNDING_TEXT != 0 && self.got_surrounding;
                             if core.is_empty() && !supports_surround {
                                 return Ok(false);
                             }
@@ -455,6 +461,12 @@ impl IBusEngine {
         // 설정창 변경을 즉시 반영(재시작 불필요): 입력 컨텍스트가 잡힐 때마다 config.ini 재확인.
         self.reload_settings();
         self.register_props(&se).await;
+        // 새 입력 컨텍스트: surrounding-text 수신 상태 초기화 후 요청. 실제로 SetSurroundingText
+        // 가 와야 BkspAttach 를 시도한다(capability 비트는 거짓일 수 있음).
+        self.got_surrounding = false;
+        if self.caps & CAP_SURROUNDING_TEXT != 0 {
+            let _ = Self::require_surrounding_text(&se).await;
+        }
         Ok(())
     }
 
@@ -478,7 +490,17 @@ impl IBusEngine {
     async fn enable(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
         self.reload_settings();
         self.register_props(&se).await;
+        self.got_surrounding = false;
+        if self.caps & CAP_SURROUNDING_TEXT != 0 {
+            let _ = Self::require_surrounding_text(&se).await;
+        }
         Ok(())
+    }
+
+    /// 데몬/응용이 surrounding-text 를 전달(RequireSurroundingText 응답). 실제로 한 번이라도
+    /// 오면 이 앱은 surrounding-text 를 진짜 지원하는 것으로 보고 BkspAttach 를 허용한다.
+    fn set_surrounding_text(&mut self, _text: Value<'_>, _cursor_pos: u32, _anchor_pos: u32) {
+        self.got_surrounding = true;
     }
 
     async fn disable(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
@@ -537,6 +559,10 @@ impl IBusEngine {
         offset: i32,
         nchars: u32,
     ) -> zbus::Result<()>;
+
+    /// 응용에 surrounding-text 를 보내달라고 요청. 응답은 SetSurroundingText 메서드로 온다.
+    #[zbus(signal)]
+    async fn require_surrounding_text(se: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[cfg(test)]

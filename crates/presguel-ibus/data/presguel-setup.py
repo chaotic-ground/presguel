@@ -7,12 +7,14 @@ AdwPreferencesGroup + AdwSwitchRow + AdwComboRow.
 다루는 설정:
   - 간단 모드 on/off (기본 off = 모든 InputEntry 를 읽어 날개셋과 동일 동작)
   - 간단 모드 on 일 때: 한글 InputEntry / 영문 배치 InputEntry 를 드롭다운으로 지정
+  - 자판 다시 불러오기 버튼(입력기 재시작): nalgaeset.xml 변경은 자동 반영 안 됨
 
 설정은 ~/.config/presguel/config.ini (key=value) 에 저장한다(엔진과 같은 형식).
 드롭다운 항목은 ~/.config/presguel/nalgaeset.xml 의 InputEntry 들에서 읽는다.
 """
 
 import os
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -130,7 +132,10 @@ class SetupWindow(Adw.ApplicationWindow):
         toolbar.add_top_bar(Adw.HeaderBar())
 
         page = Adw.PreferencesPage()
-        toolbar.set_content(page)
+        # 다시 불러오기 등 동작 피드백용 토스트 오버레이로 본문을 감싼다.
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(page)
+        toolbar.set_content(self.toast_overlay)
         self.set_content(toolbar)
 
         group = Adw.PreferencesGroup(
@@ -183,6 +188,28 @@ class SetupWindow(Adw.ApplicationWindow):
         )
         page.add(kbd_group)
 
+        # 자판 다시 불러오기. nalgaeset.xml 은 입력기가 시작할 때 한 번만 읽으므로,
+        # 자판 파일을 직접 고친 변경은 자동 반영되지 않는다(설정창 옵션은 즉시 적용).
+        reload_group = Adw.PreferencesGroup(
+            title="자판 다시 불러오기",
+            description="이 설정창의 옵션은 즉시 적용됩니다. 다만 자판 파일(nalgaeset.xml)을 "
+            "직접 고친 변경은 자동으로 반영되지 않습니다. 입력기는 시작할 때 자판을 한 번만 "
+            "읽기 때문입니다. 아래 버튼을 누르면 입력기를 다시 시작해 자판을 다시 읽습니다 "
+            "(잠깐 입력이 끊길 수 있습니다).",
+        )
+        page.add(reload_group)
+
+        reload_row = Adw.ActionRow(
+            title="지금 다시 불러오기",
+            subtitle="입력기를 다시 시작해 자판(nalgaeset.xml)을 다시 읽습니다",
+        )
+        reload_btn = Gtk.Button(label="다시 불러오기", valign=Gtk.Align.CENTER)
+        reload_btn.add_css_class("suggested-action")
+        reload_btn.connect("clicked", self.on_reload)
+        reload_row.add_suffix(reload_btn)
+        reload_row.set_activatable_widget(reload_btn)
+        reload_group.add(reload_row)
+
         self._sync_sensitivity()
         self._loading = False
 
@@ -207,6 +234,17 @@ class SetupWindow(Adw.ApplicationWindow):
         e = self.entry_row.get_selected() if self.entries else 0
         shortcuts = self.shortcuts_row.get_active()
         save_ini(pick, e, shortcuts)
+
+    def on_reload(self, *_):
+        """입력기를 다시 시작해 자판(nalgaeset.xml)을 다시 읽는다(ibus restart)."""
+        try:
+            subprocess.Popen(["ibus", "restart"])
+            self._toast("입력기를 다시 시작합니다. 잠시 후 자판이 적용됩니다.")
+        except Exception as e:  # ibus 미설치/경로 문제 등
+            self._toast(f"다시 불러오기 실패: {e}")
+
+    def _toast(self, message):
+        self.toast_overlay.add_toast(Adw.Toast(title=message))
 
 
 class SetupApp(Adw.Application):

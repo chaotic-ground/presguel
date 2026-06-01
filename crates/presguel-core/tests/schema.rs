@@ -1,11 +1,15 @@
 //! 자판 설정 XML 을 날개셋 reverse-spec 스키마(no-namespace XSD)로 검증하는
 //! 개발/CI 린트. 런타임 의존성이 아니라 테스트 전용이며, `xmllint`(libxml2)가
-//! PATH 에 있을 때만 실행하고 없으면 건너뛴다.
+//! PATH 에 있을 때만 실행한다.
 //!
 //! 검증 대상:
 //!  1. `tests/fixtures/*.xml` — 저장소 동봉 clean-room 예제(.set/.ist/.key). 항상 검사.
 //!  2. 사용자 실제 설정 — `PRESGUEL_TEST_CONFIG` 또는 provision `layout.xml` 가
-//!     있으면 추가 검사(없으면 skip, CI 에서는 자연히 skip).
+//!     있으면 추가 검사(없으면 skip).
+//!
+//! xmllint 가 없으면 기본적으로 skip 하되, 그 사실을 항상 stderr 로 알린다.
+//! CI 에서 "린트가 조용히 사라지는" 것을 막으려면 `PRESGUEL_REQUIRE_XMLLINT=1` 로
+//! 강제하면 xmllint 부재 시 테스트가 실패한다.
 //!
 //! 스키마 출처: chaotic-ground/nalgaeset-reverse-spec (CC BY 4.0). `schema/` 참조.
 
@@ -20,9 +24,31 @@ fn xmllint_available() -> bool {
         .unwrap_or(false)
 }
 
+/// xmllint 가 있으면 true. 없으면 skip 신호(false)를 돌려주되, `PRESGUEL_REQUIRE_XMLLINT`
+/// 가 설정돼 있으면 패닉(CI 강제). "조용히 통과"가 아니라 항상 가시적으로 알린다.
+fn xmllint_or_skip(test: &str) -> bool {
+    if xmllint_available() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("PRESGUEL_REQUIRE_XMLLINT").is_none(),
+        "{test}: xmllint(libxml2) 가 없는데 PRESGUEL_REQUIRE_XMLLINT 가 설정됨. \
+         CI 에서 스키마 린트가 사라지지 않도록 libxml2-utils(xmllint) 를 설치하라."
+    );
+    eprintln!("skip({test}): xmllint(libxml2) 없음. PRESGUEL_REQUIRE_XMLLINT=1 로 강제 가능");
+    false
+}
+
 /// 저장소 루트의 vendored no-namespace XSD 경로.
 fn schema_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema/nalgaeset-no-namespace.xsd")
+}
+
+/// 스키마 경로를 돌려주되, 없으면 즉시 명확히 실패시킨다.
+fn require_schema() -> PathBuf {
+    let p = schema_path();
+    assert!(p.exists(), "vendored 스키마 없음: {}", p.display());
+    p
 }
 
 fn validate(xsd: &Path, xml: &Path) -> Result<(), String> {
@@ -42,13 +68,10 @@ fn validate(xsd: &Path, xml: &Path) -> Result<(), String> {
 
 #[test]
 fn fixtures_validate_against_schema() {
-    if !xmllint_available() {
-        eprintln!("skip: xmllint(libxml2) 없음");
+    if !xmllint_or_skip("fixtures") {
         return;
     }
-    let xsd = schema_path();
-    assert!(xsd.exists(), "스키마 없음: {}", xsd.display());
-
+    let xsd = require_schema();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let mut checked = 0;
     let mut fails = Vec::new();
@@ -77,18 +100,18 @@ fn fixtures_validate_against_schema() {
 
 #[test]
 fn real_config_validates_against_schema() {
-    if !xmllint_available() {
-        eprintln!("skip: xmllint 없음");
+    if !xmllint_or_skip("real_config") {
         return;
     }
+    let xsd = require_schema();
     let path = std::env::var("PRESGUEL_TEST_CONFIG")
         .unwrap_or_else(|_| "/home/nemo/git/lens/provision/config/layout.xml".to_string());
     let path = PathBuf::from(path);
     if !path.exists() {
-        eprintln!("skip: 실제 설정 없음 ({})", path.display());
+        eprintln!("skip(real_config): 실제 설정 없음 ({})", path.display());
         return;
     }
-    if let Err(e) = validate(&schema_path(), &path) {
+    if let Err(e) = validate(&xsd, &path) {
         panic!("실제 설정이 스키마 위반:\n{e}");
     }
 }

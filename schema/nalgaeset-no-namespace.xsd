@@ -39,7 +39,7 @@
 
   ── 미충분 관측 표(lax) ──────────────────────────────────────────────────
   KeyProgramTable, UnitAbbrTable, UnitSubstTable, HanSubstTable, UserCandiTable,
-  UserCompoTable, UserKeyTable 는 실제 파일에 존재하나 표본에서 대개 비어 있어
+  UserCompoTable, UserKeyTable, JackolanternTable 는 실제 파일에 존재하나 표본에서 대개 비어 있어
   내부 구조가 드러나지 않았다. clean-room 원칙상 과대 규정하지 않고 자식·속성을
   관용 허용(xs:any/anyAttribute, processContents=skip)하며, 관측된 속성만 명시한다.
 -->
@@ -259,11 +259,12 @@
     <xs:attribute name="predefined" type="xs:string"  use="optional"/>
   </xs:complexType>
 
-  <!-- Automata: state + value(전이식) + default(폴백식) + remark(설명). -->
+  <!-- Automata: state(폴백 0) + value(전이식) + default(폴백식, 빈 식 허용) + remark(설명).
+       §1.15 규약상 value 만 필수, state/default 는 폴백이 있어 optional. -->
   <xs:complexType name="AutomataType">
-    <xs:attribute name="state"   type="IntLiteral" use="required"/>
+    <xs:attribute name="state"   type="IntLiteral" use="optional"/>
     <xs:attribute name="value"   type="Expr"       use="required"/>
-    <xs:attribute name="default" type="Expr"       use="required"/>
+    <xs:attribute name="default" type="Expr"       use="optional"/>
     <xs:attribute name="remark"  type="xs:string"  use="optional"/>
   </xs:complexType>
 

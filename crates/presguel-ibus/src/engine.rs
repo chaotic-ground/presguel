@@ -502,11 +502,11 @@ impl IBusEngine {
     }
 
     async fn reset(&mut self, #[zbus(signal_emitter)] se: SignalEmitter<'_>) -> fdo::Result<()> {
-        let i = self.current;
-        if let Mode::Hangul(core) = &mut self.entries[i] {
-            core.reset();
-        }
-        Self::emit(&se, "", "").await;
+        // 조합 중인 글자는 버리지 않고 확정한다. GNOME 은 같은 앱에 포커스를 둔 채 입력
+        // 소스를 바꿀 때(예: CapsLock 으로 엔진 전환) Reset 을 호출하는데, 여기서 버리면
+        // 조합 중이던 한글이 사라진다. focus_out/disable 과 같이 flush 로 확정한다.
+        self.flush_current(&se).await;
+        Self::emit(&se, "", "").await; // 확정이 없었어도 preedit 는 비운다.
         Ok(())
     }
 

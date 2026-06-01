@@ -8,7 +8,7 @@ Source config analysed: `/home/nemo/git/lens/provision/config/nalgaeset.xml`
 
 ## Authoritative sources
 
-날개셋 한글 입력기 is freeware by 김용묵 (Kim Yong-mook, 한글문화원). It is **not** open
+날개셋 한글 입력기 is freeware by 김용묵 (Kim Yong-mook). It is **not** open
 source, so there is no canonical source tree to cite; the deep semantics below are derived
 from (a) the official site, (b) the bundled Korean help manual as quoted by the author and
 community, and (c) direct decoding of the XML data. Confidence is marked per claim.
@@ -36,7 +36,10 @@ community, and (c) direct decoding of the XML data. Confidence is marked per cla
 - ko.wikipedia / namu.wiki 날개셋 — general framing; namu cites 김용묵's thesis "한글
   입력·편집기의 통합적 설계와 구현에 관한 연구."
 
-The XML is the binary `.ist` serialised as text; the author states (ngs_menu1) it can be saved
+This XML is the **종합 설정 (comprehensive setting, `.set`)** file (root `<EditContextSetting>`)
+serialised as text. The three settings file types are nested sub-roots of one schema:
+`.set` (종합 설정, `EditContextSetting`) ⊃ `.ist` (유형 / input type, `InputEntry`) ⊃
+`.key` (글쇠배열 / key layout, `KeyTable`). The author states (ngs_menu1) settings can be saved
 "바이너리뿐만 아니라 …XML 방식으로도" and edited in a text editor.
 
 ---

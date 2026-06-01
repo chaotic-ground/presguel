@@ -556,16 +556,7 @@ impl Engine {
                     delete_before: 0,
                 }
             }
-            Value::Command(_cmd) => {
-                // 제어 명령(C0|): 현재는 현재 음절만 확정(한자 변환 등은 추후).
-                let commit = self.commit_and_clear();
-                KeyOutcome {
-                    commit,
-                    preedit: self.preedit(),
-                    consumed: true,
-                    delete_before: 0,
-                }
-            }
+            Value::Command(cmd) => self.dispatch_command(cmd),
         }
     }
 
@@ -626,14 +617,7 @@ impl Engine {
             }
         };
         self.bksp_remove(unit);
-        // 남은 이력을 처음부터 재생해 현재 음절을 재구성(오토마타 상태도 초기화).
-        let hist = std::mem::take(&mut self.history);
-        self.cur = Syllable::default();
-        self.auto_state = self.layout.automata_start;
-        for u in hist {
-            // 한 음절 안의 단위들이므로 재생 중 확정은 발생하지 않는다.
-            let _ = self.feed_unit(u);
-        }
+        self.replay_history();
         KeyOutcome {
             commit: String::new(),
             preedit: self.preedit(),
@@ -678,6 +662,151 @@ impl Engine {
                     {
                         self.history.remove(p);
                     }
+                }
+            }
+        }
+    }
+
+    // ── C0 특수글쇠(제어 명령) ──────────────────────────────────────────────────
+    //
+    // 날개셋 "특수글쇠"(value 의 `C0|N`)를 실행한다. 코드별 의미는
+    // research/ngs-chm-speckey-reference 및 chm `usa_speckey.htm` 참고. 대부분은
+    // 조합 중 음절의 이력(history)을 편집한 뒤 처음부터 재생(replay)해 cur 과
+    // 오토마타 상태를 다시 맞추는 방식으로 구현한다(슬롯을 직접 만지면 history 와
+    // 어긋나 이후 백스페이스가 깨지므로). cursor 이동·Del·한자 후보 변환처럼 IBus/
+    // Wayland 에서 불가능하거나 별도 서브시스템이 필요한 코드는 기본 동작(현재 음절
+    // 확정)으로 떨어진다.
+
+    /// 남은 이력을 처음부터 재생해 현재 음절(cur)과 오토마타 상태를 재구성한다.
+    /// (한 음절 안의 단위들이므로 재생 중 확정은 발생하지 않는다.)
+    fn replay_history(&mut self) {
+        let hist = std::mem::take(&mut self.history);
+        self.cur = Syllable::default();
+        self.auto_state = self.layout.automata_start;
+        for u in hist {
+            let _ = self.feed_unit(u);
+        }
+    }
+
+    /// 조합 중 편집 명령의 공통 결과(확정 없음, 현재 preedit, 소비).
+    fn composing_outcome(&self) -> KeyOutcome {
+        KeyOutcome {
+            commit: String::new(),
+            preedit: self.preedit(),
+            consumed: true,
+            delete_before: 0,
+        }
+    }
+
+    /// 이력에서 주어진 낱자 갈래들에 해당하는 단위를 모두 빼고 재생한다.
+    /// (특정 낱자 삭제 0x2~0x4, 특정 낱자만 남기기 0x15~0x17 용)
+    fn delete_cats_and_replay(&mut self, remove: &[Category]) {
+        let layout = &self.layout;
+        self.history.retain(|u| match Self::unit_cat(layout, u) {
+            Some(c) => !remove.contains(&c),
+            None => true,
+        });
+        self.replay_history();
+    }
+
+    /// 주어진 삭제 단위(BkspUnit)로 이력을 줄이고 재생한다(0x19~0x1C: Backspace 부분 동작).
+    fn bksp_cmd(&mut self, unit: BkspUnit) -> KeyOutcome {
+        self.bksp_remove(unit);
+        self.replay_history();
+        self.composing_outcome()
+    }
+
+    /// 조합 중 한 성분(초/중/종성)을 떼어 **다음 글자로** 보낸다(0x8/0x9/0xA: 뒤로 이동).
+    /// 남은 성분으로 현재 음절을 확정하고, 빼낸 성분을 새 음절로 재투입한다(오토마타/
+    /// 휴리스틱이 자리 배치). 모아치기와 연동해 '염'→'여'+조합 중 'ㅁ' 같은 동작을 한다.
+    fn cmd_move_component_back(&mut self, cat: Category) -> KeyOutcome {
+        let has = match cat {
+            Category::Cho => self.cur.cho.is_some(),
+            Category::Jung => self.cur.jung.is_some(),
+            Category::Jong => self.cur.jong.is_some(),
+        };
+        if !has {
+            return self.composing_outcome();
+        }
+        // 이력을 (남길 것, 빼낼 것)으로 가른다(순서 보존).
+        let (keep, moved) = {
+            let layout = &self.layout;
+            let mut keep = Vec::new();
+            let mut moved = Vec::new();
+            for u in &self.history {
+                if Self::unit_cat(layout, u) == Some(cat) {
+                    moved.push(*u);
+                } else {
+                    keep.push(*u);
+                }
+            }
+            (keep, moved)
+        };
+        self.history = keep;
+        self.replay_history();
+        let commit = self.commit_current();
+        // 빼낸 성분은 새 음절의 시작이므로 오토마타 상태를 초기화한다(commit_current 는
+        // 상태를 보존하므로, 안 하면 '완성' 상태가 남아 다음 글쇠가 곧바로 확정돼 버린다).
+        self.history.clear();
+        self.auto_state = self.layout.automata_start;
+        for u in moved {
+            let _ = self.feed_unit(u);
+        }
+        KeyOutcome {
+            commit,
+            preedit: self.preedit(),
+            consumed: true,
+            delete_before: 0,
+        }
+    }
+
+    /// C0 특수글쇠 코드 분배.
+    fn dispatch_command(&mut self, cmd: u32) -> KeyOutcome {
+        use Category::{Cho, Jong, Jung};
+        match cmd {
+            // 0x2~0x4: 특정 낱자(초/중/종성) 삭제 후 그 글자를 계속 조합.
+            0x2 => {
+                self.delete_cats_and_replay(&[Cho]);
+                self.composing_outcome()
+            }
+            0x3 => {
+                self.delete_cats_and_replay(&[Jung]);
+                self.composing_outcome()
+            }
+            0x4 => {
+                self.delete_cats_and_replay(&[Jong]);
+                self.composing_outcome()
+            }
+            // 0x8~0xA: 초/중/종성을 뒤 글자로 빼기(모아치기 연동).
+            0x8 => self.cmd_move_component_back(Cho),
+            0x9 => self.cmd_move_component_back(Jung),
+            0xA => self.cmd_move_component_back(Jong),
+            // 0x15~0x17: 특정 낱자만 남기고 나머지 삭제.
+            0x15 => {
+                self.delete_cats_and_replay(&[Jung, Jong]);
+                self.composing_outcome()
+            }
+            0x16 => {
+                self.delete_cats_and_replay(&[Cho, Jong]);
+                self.composing_outcome()
+            }
+            0x17 => {
+                self.delete_cats_and_replay(&[Cho, Jung]);
+                self.composing_outcome()
+            }
+            // 0x19~0x1C: Backspace 부분 동작(마지막한타/최하위직전/최하위전체/글자전체).
+            0x19 => self.bksp_cmd(BkspUnit::LastKey),
+            0x1A => self.bksp_cmd(BkspUnit::LowestLastKey),
+            0x1B => self.bksp_cmd(BkspUnit::LowestWhole),
+            0x1C => self.bksp_cmd(BkspUnit::Syllable),
+            // 미구현/미지원(cursor 이동·Del·한자 후보 변환 등): 현재 음절만 확정.
+            _ => {
+                let commit = self.commit_and_clear();
+                KeyOutcome {
+                    commit,
+                    preedit: self.preedit(),
+                    consumed: true,
+                    delete_before: 0,
                 }
             }
         }
@@ -901,6 +1030,20 @@ mod tests {
           <Key at="0x6F" value="H3|O_"/>  <!-- o 중 ㅗ -->
           <Key at="0x6D" value="H3|_N"/>  <!-- m 종 ㄴ -->
           <Key at="0x69" value="H3|AE"/> <!-- i 중 ㅐ -->
+          <!-- C0 특수글쇠(테스트용): 대문자 자리에 배당 -->
+          <Key at="0x41" value="C0|0x2"/>  <!-- A 초성 삭제 -->
+          <Key at="0x42" value="C0|0x3"/>  <!-- B 중성 삭제 -->
+          <Key at="0x43" value="C0|0x4"/>  <!-- C 종성 삭제 -->
+          <Key at="0x44" value="C0|0xA"/>  <!-- D 종성 뒤로 빼기 -->
+          <Key at="0x45" value="C0|0x8"/>  <!-- E 초성 뒤로 빼기 -->
+          <Key at="0x46" value="C0|0x9"/>  <!-- F 중성 뒤로 빼기 -->
+          <Key at="0x47" value="C0|0x15"/> <!-- G 초성만 남기기 -->
+          <Key at="0x48" value="C0|0x16"/> <!-- H 중성만 남기기 -->
+          <Key at="0x49" value="C0|0x17"/> <!-- I 종성만 남기기 -->
+          <Key at="0x4A" value="C0|0x19"/> <!-- J 마지막 한 타 -->
+          <Key at="0x4B" value="C0|0x1A"/> <!-- K 최하위 직전 한 타 -->
+          <Key at="0x4C" value="C0|0x1B"/> <!-- L 최하위 낱자 전체 -->
+          <Key at="0x4D" value="C0|0x1C"/> <!-- M 글자 전체 -->
         </KeyTable>
       </InputSchemeSetting>
       <GeneratorSetting object="CNgsImeEx">
@@ -1245,5 +1388,146 @@ mod tests {
         assert!(!bk.consumed);
         assert_eq!(bk.preedit, "");
         assert_eq!(bk.delete_before, 0);
+    }
+
+    // ── C0 특수글쇠 ────────────────────────────────────────────────────────────
+    // auto_engine 의 KeyTable 대문자 자리에 C0 명령이 배당돼 있다:
+    // A=초성삭제, B=중성삭제, C=종성삭제, D=종성뒤로, E=초성뒤로, F=중성뒤로,
+    // G=초성만, H=중성만, I=종성만, J=마지막한타, K=최하위직전, L=최하위전체, M=글자전체.
+
+    #[test]
+    fn c0_delete_cho() {
+        // 간(ㄱㅏㄴ) 조합 중 초성 삭제 → ㅏㄴ(중성+종성, 초성 없이 계속 조합).
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'A', false); // C0|0x2 초성 삭제
+        assert_eq!(o.commit, "");
+        assert!(o.consumed);
+        assert_eq!(o.preedit, "ㅏㄴ");
+    }
+
+    #[test]
+    fn c0_delete_jung() {
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'B', false); // C0|0x3 중성 삭제 → ㄱㄴ
+        assert_eq!(o.preedit, "ㄱㄴ");
+    }
+
+    #[test]
+    fn c0_delete_jong() {
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'C', false); // C0|0x4 종성 삭제 → 가
+        assert_eq!(o.preedit, "가");
+    }
+
+    #[test]
+    fn c0_move_jong_back() {
+        // 종성 뒤로 빼기(사용자 바인딩): 간 → "가" 확정 + 종성 ㄴ 이 다음 글자로.
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'D', false); // C0|0xA
+        assert_eq!(o.commit, "가");
+        assert_eq!(o.preedit, "ㄴ");
+        assert!(o.consumed);
+    }
+
+    #[test]
+    fn c0_move_jong_back_then_compose() {
+        // 빼낸 종성은 모아치기에서 다음 글자의 *종성*으로 붙는다('염'→'여'+ㅁ 뒤 '르'→'름'
+        // 패턴). 간 → 0xA → "가" 확정 + ㄴ 대기, 이어서 ㄱㅏ 입력 → 그 ㄴ이 받침이 되어 "간".
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'D', false); // 가 확정, ㄴ 대기(종성)
+        assert_eq!(o.commit, "가");
+        assert_eq!(o.preedit, "ㄴ");
+        let o2 = e.press(b'g', false); // 초성 ㄱ
+        assert_eq!(o2.preedit, "ㄱㄴ");
+        let o3 = e.press(b'a', false); // 중성 ㅏ → ㄱ+ㅏ+ㄴ = 간
+        assert_eq!(o3.preedit, "간");
+    }
+
+    #[test]
+    fn c0_move_cho_back() {
+        // 초성 뒤로 빼기: 간 → "ㅏㄴ" 확정 + 초성 ㄱ 이 다음 글자로.
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'E', false); // C0|0x8
+        assert_eq!(o.commit, "ㅏㄴ");
+        assert_eq!(o.preedit, "ㄱ");
+    }
+
+    #[test]
+    fn c0_move_jung_back() {
+        // 중성 뒤로 빼기: 간 → "ㄱㄴ" 확정 + 중성 ㅏ 이 다음 글자로.
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'F', false); // C0|0x9
+        assert_eq!(o.commit, "ㄱㄴ");
+        assert_eq!(o.preedit, "ㅏ");
+    }
+
+    #[test]
+    fn c0_keep_only_cho() {
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'G', false); // C0|0x15 초성만 남기기 → ㄱ
+        assert_eq!(o.preedit, "ㄱ");
+    }
+
+    #[test]
+    fn c0_keep_only_jung() {
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'H', false); // C0|0x16 중성만 남기기 → ㅏ
+        assert_eq!(o.preedit, "ㅏ");
+    }
+
+    #[test]
+    fn c0_keep_only_jong() {
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        let o = e.press(b'I', false); // C0|0x17 종성만 남기기 → ㄴ
+        assert_eq!(o.preedit, "ㄴ");
+    }
+
+    #[test]
+    fn c0_bksp_partial_units() {
+        // 0x19 마지막한타 / 0x1A 최하위직전 / 0x1B 최하위전체 / 0x1C 글자전체.
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        assert_eq!(e.press(b'J', false).preedit, "가"); // 마지막 한 타(종성 ㄴ)
+        let mut e2 = auto_engine();
+        typ(&mut e2, "gam");
+        assert_eq!(e2.press(b'K', false).preedit, "가"); // 최하위 직전 한 타
+        let mut e3 = auto_engine();
+        typ(&mut e3, "gam");
+        assert_eq!(e3.press(b'L', false).preedit, "가"); // 최하위 낱자 전체
+        let mut e4 = auto_engine();
+        typ(&mut e4, "gam");
+        assert_eq!(e4.press(b'M', false).preedit, ""); // 글자 전체
+    }
+
+    #[test]
+    fn c0_delete_then_backspace_consistent() {
+        // 명령으로 편집한 뒤에도 이력이 cur 과 일치해 백스페이스가 깨지지 않는다.
+        // 간 → 종성삭제(가) → 백스페이스(ㅏ 제거) → ㄱ.
+        let mut e = auto_engine();
+        typ(&mut e, "gam"); // 간
+        e.press(b'C', false); // 종성 삭제 → 가
+        assert_eq!(e.preedit(), "가");
+        let o = e.backspace(); // 가 → ㄱ
+        assert_eq!(o.preedit, "ㄱ");
+    }
+
+    #[test]
+    fn c0_on_empty_is_noop_consumed() {
+        // 조합 중이 아닐 때 낱자 편집 명령은 무동작이되 소비한다(원시 글쇠 미입력).
+        let mut e = auto_engine();
+        let o = e.press(b'A', false); // C0|0x2, 빈 상태
+        assert_eq!(o.commit, "");
+        assert_eq!(o.preedit, "");
+        assert!(o.consumed);
     }
 }
